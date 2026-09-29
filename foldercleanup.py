@@ -121,6 +121,75 @@ def empty_dirs(root: Path):
             if d.is_dir() and not d.is_symlink() and not any(d.iterdir())]
 
 
+def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, old=None, ok=lambda p: True):
+    """Compute actions as (kind, src, dest) tuples; kind is 'move', 'delete' or 'rmdir'.
+
+    For 'delete', dest is the file it duplicates. Nothing is changed on disk.
+    """
+    plan, used, taken = [], set(), set()
+
+    def claim(dest: Path) -> Path:
+        dest = unique_dest(dest)
+        while dest in taken:
+            dest = unique_dest(dest.with_name(dest.name + "_"))
+        taken.add(dest)
+        return dest
+
+    if duplicates:
+        for dup, orig in plan_duplicates(root, ok):
+            plan.append(("delete", dup, orig))
+            used.add(dup)
+    if old is not None:
+        for p in plan_old(root, old, ok):
+            if p not in used:
+                plan.append(("move", p, claim(root / "_Old" / p.name)))
+                used.add(p)
+    if sort:
+        for src, dest in plan_sort(root, ok):
+            if src not in used:
+                plan.append(("move", src, claim(dest)))
+    if empty_dirs_:
+        plan += [("rmdir", d, None) for d in empty_dirs(root)]
+    return plan
+
+
+def apply_plan(plan, root: Path):
+    """Execute a plan from build_plan. Returns a list of (kind, src, dest) actually done."""
+    done = []
+    for kind, src, dest in plan:
+        if not src.exists():
+            continue
+        if kind == "delete":
+            src.unlink()
+        elif kind == "move":
+            dest = unique_dest(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        elif kind == "rmdir":
+            if any(src.iterdir()):
+                continue
+            src.rmdir()
+        done.append((kind, src, dest))
+    if any(k == "rmdir" for k, _, _ in plan):  # parents emptied by the above
+        removed = True
+        while removed:
+            removed = False
+            for d in empty_dirs(root):
+                d.rmdir()
+                done.append(("rmdir", d, None))
+                removed = True
+    return done
+
+
+def describe(kind, src: Path, dest, root: Path) -> str:
+    rel = lambda p: p.relative_to(root)
+    if kind == "delete":
+        return f"delete {rel(src)} (duplicate of {rel(dest)})"
+    if kind == "move":
+        return f"move   {rel(src)} -> {rel(dest)}"
+    return f"rmdir  {rel(src)}"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("folder", type=Path, help="folder to clean")
@@ -145,49 +214,13 @@ def main(argv=None) -> int:
     if not (args.sort or args.duplicates or args.empty_dirs or args.old is not None):
         ap.error("choose at least one of --sort, --duplicates, --empty-dirs, --old")
 
+    plan = build_plan(root, sort=args.sort, duplicates=args.duplicates,
+                      empty_dirs_=args.empty_dirs, old=args.old, ok=ok)
     tag = "" if args.apply else "[dry-run] "
-    count = 0
-
-    def move(src, dest):
-        nonlocal count
-        dest = unique_dest(dest)
-        print(f"{tag}move   {src.relative_to(root)} -> {dest.relative_to(root)}")
-        if args.apply:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-        count += 1
-
-    # Order matters: dedupe first so we don't sort files we're about to delete.
-    if args.duplicates:
-        for dup, orig in plan_duplicates(root, ok):
-            print(f"{tag}delete {dup.relative_to(root)} (duplicate of {orig.relative_to(root)})")
-            if args.apply:
-                dup.unlink()
-            count += 1
-    if args.old is not None:
-        for p in plan_old(root, args.old, ok):
-            if p.exists():
-                move(p, root / "_Old" / p.name)
-    if args.sort:
-        for src, dest in plan_sort(root, ok):
-            if src.exists():
-                move(src, dest)
-    if args.empty_dirs:
-        if args.apply:
-            removed = True
-            while removed:
-                removed = False
-                for d in empty_dirs(root):
-                    print(f"rmdir  {d.relative_to(root)}")
-                    d.rmdir()
-                    count += 1
-                    removed = True
-        else:
-            for d in empty_dirs(root):
-                print(f"{tag}rmdir  {d.relative_to(root)}")
-                count += 1
-
-    print(f"\n{count} action(s) {'applied' if args.apply else 'planned (re-run with --apply)'}.")
+    actions = apply_plan(plan, root) if args.apply else plan
+    for a in actions:
+        print(tag + describe(*a, root))
+    print(f"\n{len(actions)} action(s) {'applied' if args.apply else 'planned (re-run with --apply)'}.")
     return 0
 
 

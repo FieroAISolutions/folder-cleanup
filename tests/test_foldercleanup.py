@@ -61,3 +61,18 @@ def test_filters(tmp_path):
 def test_parse_size():
     assert fc.parse_size("10MB") == 10 << 20
     assert fc.parse_size("1.5k") == 1536
+
+
+def test_webui_plan_and_apply(tmp_path):
+    import pytest
+    import webui
+    make(tmp_path)
+    opts = {"folder": str(tmp_path), "sort": True, "duplicates": True, "empty_dirs": True, "ext": ["jpg", "txt"]}
+    plan = webui.run(opts, apply=False)
+    assert plan and (tmp_path / "a.jpg").exists()  # preview changes nothing
+    webui.run(opts, apply=True)
+    assert (tmp_path / "Images" / "a.jpg").exists() and not (tmp_path / "empty").exists()
+    with pytest.raises(ValueError):
+        webui.run({"folder": str(tmp_path / "nope"), "sort": True}, apply=False)
+    with pytest.raises(ValueError):
+        webui.run({"folder": str(tmp_path)}, apply=False)

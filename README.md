@@ -2,6 +2,16 @@
 
 A small, dependency-free Python CLI that tidies a folder. **Dry run by default**; nothing changes without `--apply`.
 
+## Web UI
+
+```
+python3 webui.py          # opens http://127.0.0.1:8765/
+```
+
+Pick a folder, tick actions, set filters, **Preview** the plan, then **Apply**. It listens on localhost only, and every request needs a per-run token. The server re-plans on Apply, so it acts on the folder's current state, not a stale preview.
+
+## Command line
+
 ```
 python3 foldercleanup.py ~/Downloads --sort --duplicates --empty-dirs        # preview
 python3 foldercleanup.py ~/Downloads --sort --duplicates --empty-dirs --apply
