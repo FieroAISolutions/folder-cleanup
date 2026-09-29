@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+import safety
 
 CATEGORIES = {
     "Images": {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".heic", ".tiff"},
@@ -83,7 +84,7 @@ def make_filter(include=(), exclude=(), exts=(), min_size=None, max_size=None):
 
 def top_level_files(root: Path, ok=lambda p: True):
     return sorted(p for p in root.iterdir()
-                  if p.is_file() and not p.name.startswith(".") and ok(p))
+                  if not safety.blocked(p) and p.is_file() and ok(p))
 
 
 def plan_sort(root: Path, ok=lambda p: True):
@@ -94,7 +95,7 @@ def plan_sort(root: Path, ok=lambda p: True):
 def plan_duplicates(root: Path, ok=lambda p: True):
     """Return duplicate files (later copies of identical content), scanning recursively."""
     by_size, dupes = {}, []
-    for p in sorted(root.rglob("*")):
+    for p in safety.walk(root):
         if p.is_file() and not p.is_symlink() and ok(p):
             by_size.setdefault(p.stat().st_size, []).append(p)
     for group in by_size.values():
@@ -117,7 +118,7 @@ def plan_old(root: Path, days: int, ok=lambda p: True):
 
 def empty_dirs(root: Path):
     """Empty directories, deepest first (so parents emptied by removal are included by caller loop)."""
-    return [d for d in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True)
+    return [d for d in sorted(safety.walk(root), key=lambda p: len(p.parts), reverse=True)
             if d.is_dir() and not d.is_symlink() and not any(d.iterdir())]
 
 
@@ -126,6 +127,9 @@ def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, o
 
     For 'delete', dest is the file it duplicates. Nothing is changed on disk.
     """
+    root = safety.validate_root(root)
+    if old is not None and (isinstance(old, bool) or not isinstance(old, int) or old < 0):
+        raise ValueError('Age must be a nonnegative whole number of days.')
     plan, used, taken = [], set(), set()
 
     def claim(dest: Path) -> Path:
@@ -149,42 +153,25 @@ def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, o
             if src not in used:
                 plan.append(("move", src, claim(dest)))
     if empty_dirs_:
-        plan += [("rmdir", d, None) for d in empty_dirs(root)]
+        destinations = [dest for kind, _, dest in plan if kind == 'move']
+        plan += [("rmdir", d, None) for d in empty_dirs(root)
+                 if not any(dest.is_relative_to(d) for dest in destinations)]
+    for _, src, dest in plan:
+        safety.check_path(root, src)
+        if dest is not None:
+            safety.check_path(root, dest)
     return plan
 
 
-def apply_plan(plan, root: Path):
+def apply_plan(plan, root: Path, expected=None, report=None):
     """Execute a plan from build_plan. Returns a list of (kind, src, dest) actually done."""
-    done = []
-    for kind, src, dest in plan:
-        if not src.exists():
-            continue
-        if kind == "delete":
-            src.unlink()
-        elif kind == "move":
-            dest = unique_dest(dest)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-        elif kind == "rmdir":
-            if any(src.iterdir()):
-                continue
-            src.rmdir()
-        done.append((kind, src, dest))
-    if any(k == "rmdir" for k, _, _ in plan):  # parents emptied by the above
-        removed = True
-        while removed:
-            removed = False
-            for d in empty_dirs(root):
-                d.rmdir()
-                done.append(("rmdir", d, None))
-                removed = True
-    return done
+    return safety.execute(plan, root, expected, report)
 
 
 def describe(kind, src: Path, dest, root: Path) -> str:
     rel = lambda p: p.relative_to(root)
     if kind == "delete":
-        return f"delete {rel(src)} (duplicate of {rel(dest)})"
+        return f"recoverable removal {rel(src)} (duplicate of {rel(dest)})"
     if kind == "move":
         return f"move   {rel(src)} -> {rel(dest)}"
     return f"rmdir  {rel(src)}"
@@ -192,7 +179,8 @@ def describe(kind, src: Path, dest, root: Path) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("folder", type=Path, help="folder to clean")
+    ap.add_argument("folder", help="folder to clean")
+    ap.add_argument("--undo", metavar="SESSION_ID", help="restore a cleanup session")
     ap.add_argument("--apply", action="store_true", help="actually make changes (default: dry run)")
     ap.add_argument("--sort", action="store_true", help="move top-level files into category folders")
     ap.add_argument("--duplicates", action="store_true", help="delete duplicate files (keeps first copy)")
@@ -207,17 +195,22 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     ok = make_filter(args.include, args.exclude, args.ext, args.min_size, args.max_size)
 
-    root = args.folder.resolve()
+    root = safety.validate_root(args.folder)
+    if args.undo:
+        safety.undo(root, args.undo)
+        print(f'Restored session {args.undo}.')
+        return 0
     if not root.is_dir():
         print(f"error: {root} is not a directory", file=sys.stderr)
         return 2
     if not (args.sort or args.duplicates or args.empty_dirs or args.old is not None):
         ap.error("choose at least one of --sort, --duplicates, --empty-dirs, --old")
 
+    expected = safety.snapshot(root)
     plan = build_plan(root, sort=args.sort, duplicates=args.duplicates,
                       empty_dirs_=args.empty_dirs, old=args.old, ok=ok)
     tag = "" if args.apply else "[dry-run] "
-    actions = apply_plan(plan, root) if args.apply else plan
+    actions = apply_plan(plan, root, expected) if args.apply else plan
     for a in actions:
         print(tag + describe(*a, root))
     print(f"\n{len(actions)} action(s) {'applied' if args.apply else 'planned (re-run with --apply)'}.")

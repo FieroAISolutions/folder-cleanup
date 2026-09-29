@@ -70,7 +70,7 @@ def test_webui_plan_and_apply(tmp_path):
     opts = {"folder": str(tmp_path), "sort": True, "duplicates": True, "empty_dirs": True, "ext": ["jpg", "txt"]}
     plan = webui.run(opts, apply=False)
     assert plan and (tmp_path / "a.jpg").exists()  # preview changes nothing
-    webui.run(opts, apply=True)
+    webui.run({'plan_id': plan['plan_id']}, apply=True)
     assert (tmp_path / "Images" / "a.jpg").exists() and not (tmp_path / "empty").exists()
     with pytest.raises(ValueError):
         webui.run({"folder": str(tmp_path / "nope"), "sort": True}, apply=False)
