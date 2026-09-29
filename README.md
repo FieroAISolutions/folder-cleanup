@@ -15,6 +15,19 @@ python3 foldercleanup.py ~/Downloads --sort --duplicates --empty-dirs --apply
 | `--empty-dirs` | Remove empty directories |
 | `--apply` | Actually perform the actions |
 
+### Filters
+
+Filters limit which files `--sort`, `--duplicates` and `--old` touch (they don't affect `--empty-dirs`):
+
+| Flag | Effect |
+|------|--------|
+| `--include GLOB` | Only files matching the pattern (repeatable), e.g. `--include '*.pdf'` |
+| `--exclude GLOB` | Skip files matching the pattern (repeatable) |
+| `--ext EXT` | Only files with this extension (repeatable) |
+| `--min-size SIZE` / `--max-size SIZE` | Size bounds, e.g. `500KB`, `10MB`, `1GB` |
+
+Example: `python3 foldercleanup.py ~/Downloads --sort --ext pdf --ext docx --min-size 1MB`
+
 Name collisions are resolved by renaming (`file (1).txt`), never overwriting. Hidden files are left alone.
 
 Tests: `pip install pytest && pytest`

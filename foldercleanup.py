@@ -4,7 +4,9 @@
 Safe by default: nothing is changed unless --apply is given.
 """
 import argparse
+import fnmatch
 import hashlib
+import re
 import shutil
 import sys
 import time
@@ -49,20 +51,51 @@ def file_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def top_level_files(root: Path):
-    return sorted(p for p in root.iterdir() if p.is_file() and not p.name.startswith("."))
+def parse_size(text: str) -> int:
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmg]?)b?\s*", text.lower())
+    if not m:
+        raise argparse.ArgumentTypeError(f"invalid size: {text!r} (try 500KB, 10MB, 1GB)")
+    return int(float(m.group(1)) * {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30}[m.group(2)])
 
 
-def plan_sort(root: Path):
+def make_filter(include=(), exclude=(), exts=(), min_size=None, max_size=None):
+    """Build a predicate deciding whether a file is eligible for any action."""
+    exts = {("." + e.lstrip(".")).lower() for e in exts}
+
+    def match(path: Path) -> bool:
+        name = path.name
+        if include and not any(fnmatch.fnmatch(name, g) for g in include):
+            return False
+        if any(fnmatch.fnmatch(name, g) for g in exclude):
+            return False
+        if exts and path.suffix.lower() not in exts:
+            return False
+        if min_size is not None or max_size is not None:
+            size = path.stat().st_size
+            if min_size is not None and size < min_size:
+                return False
+            if max_size is not None and size > max_size:
+                return False
+        return True
+
+    return match
+
+
+def top_level_files(root: Path, ok=lambda p: True):
+    return sorted(p for p in root.iterdir()
+                  if p.is_file() and not p.name.startswith(".") and ok(p))
+
+
+def plan_sort(root: Path, ok=lambda p: True):
     """Return [(src, dest)] moving top-level files into category folders."""
-    return [(p, root / category_for(p) / p.name) for p in top_level_files(root)]
+    return [(p, root / category_for(p) / p.name) for p in top_level_files(root, ok)]
 
 
-def plan_duplicates(root: Path):
+def plan_duplicates(root: Path, ok=lambda p: True):
     """Return duplicate files (later copies of identical content), scanning recursively."""
     by_size, dupes = {}, []
     for p in sorted(root.rglob("*")):
-        if p.is_file() and not p.is_symlink():
+        if p.is_file() and not p.is_symlink() and ok(p):
             by_size.setdefault(p.stat().st_size, []).append(p)
     for group in by_size.values():
         if len(group) < 2:
@@ -77,9 +110,9 @@ def plan_duplicates(root: Path):
     return dupes
 
 
-def plan_old(root: Path, days: int):
+def plan_old(root: Path, days: int, ok=lambda p: True):
     cutoff = time.time() - days * 86400
-    return [p for p in top_level_files(root) if p.stat().st_mtime < cutoff]
+    return [p for p in top_level_files(root, ok) if p.stat().st_mtime < cutoff]
 
 
 def empty_dirs(root: Path):
@@ -96,7 +129,14 @@ def main(argv=None) -> int:
     ap.add_argument("--duplicates", action="store_true", help="delete duplicate files (keeps first copy)")
     ap.add_argument("--empty-dirs", action="store_true", help="remove empty directories")
     ap.add_argument("--old", type=int, metavar="DAYS", help="move top-level files older than DAYS to _Old")
+    flt = ap.add_argument_group("filters", "restrict which files --sort, --duplicates and --old touch")
+    flt.add_argument("--include", action="append", default=[], metavar="GLOB", help="only files matching GLOB (repeatable), e.g. '*.pdf'")
+    flt.add_argument("--exclude", action="append", default=[], metavar="GLOB", help="skip files matching GLOB (repeatable)")
+    flt.add_argument("--ext", action="append", default=[], metavar="EXT", help="only files with this extension (repeatable), e.g. jpg")
+    flt.add_argument("--min-size", type=parse_size, metavar="SIZE", help="only files at least SIZE, e.g. 10MB")
+    flt.add_argument("--max-size", type=parse_size, metavar="SIZE", help="only files at most SIZE")
     args = ap.parse_args(argv)
+    ok = make_filter(args.include, args.exclude, args.ext, args.min_size, args.max_size)
 
     root = args.folder.resolve()
     if not root.is_dir():
@@ -119,17 +159,17 @@ def main(argv=None) -> int:
 
     # Order matters: dedupe first so we don't sort files we're about to delete.
     if args.duplicates:
-        for dup, orig in plan_duplicates(root):
+        for dup, orig in plan_duplicates(root, ok):
             print(f"{tag}delete {dup.relative_to(root)} (duplicate of {orig.relative_to(root)})")
             if args.apply:
                 dup.unlink()
             count += 1
     if args.old is not None:
-        for p in plan_old(root, args.old):
+        for p in plan_old(root, args.old, ok):
             if p.exists():
                 move(p, root / "_Old" / p.name)
     if args.sort:
-        for src, dest in plan_sort(root):
+        for src, dest in plan_sort(root, ok):
             if src.exists():
                 move(src, dest)
     if args.empty_dirs:

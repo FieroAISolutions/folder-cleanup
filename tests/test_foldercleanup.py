@@ -45,3 +45,19 @@ def test_old(tmp_path):
     (tmp_path / "new.txt").write_text("y")
     fc.main([str(tmp_path), "--old", "30", "--apply"])
     assert (tmp_path / "_Old" / "old.txt").exists() and (tmp_path / "new.txt").exists()
+
+
+def test_filters(tmp_path):
+    (tmp_path / "a.jpg").write_text("x")
+    (tmp_path / "b.png").write_text("x" * 100)
+    (tmp_path / "keep.jpg").write_text("x")
+    fc.main([str(tmp_path), "--sort", "--ext", "jpg", "--exclude", "keep*", "--apply"])
+    assert (tmp_path / "Images" / "a.jpg").exists()
+    assert (tmp_path / "b.png").exists() and (tmp_path / "keep.jpg").exists()
+    fc.main([str(tmp_path), "--sort", "--min-size", "50B", "--apply"])
+    assert (tmp_path / "Images" / "b.png").exists() and (tmp_path / "keep.jpg").exists()
+
+
+def test_parse_size():
+    assert fc.parse_size("10MB") == 10 << 20
+    assert fc.parse_size("1.5k") == 1536
