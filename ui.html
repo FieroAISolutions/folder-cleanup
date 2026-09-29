@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Folder Cleanup</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f6fa;--card:#fff;--ink:#172538;--muted:#506078;--line:#ccd5e2;--accent:#2457ba}
+@media(prefers-color-scheme:dark){:root{--bg:#101722;--card:#1b2635;--ink:#eef3fb;--muted:#b6c5dc;--line:#42536b;--accent:#396fce}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1100px;margin:auto;padding:28px 20px}h1{margin:0;font-size:30px}h2{font-size:19px;margin:0 0 12px}p{margin:8px 0 16px}.muted,small{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;margin:18px 0}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+label{display:block}input[type=text],input[type=number]{display:block;width:100%;padding:10px;margin-top:5px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;font:inherit}
+input[type=checkbox],input[type=radio]{width:18px;height:18px;vertical-align:middle;accent-color:var(--accent)}button{padding:9px 15px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;font:inherit}button.primary{background:var(--accent);color:white}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:3px solid #e5a400;outline-offset:3px}
+.scroll{overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{font-size:13px;color:var(--muted)}.error{color:#c93e39}progress{width:100%;height:14px}fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0;padding:12px}legend{font-weight:600}.path{overflow-wrap:anywhere}#summary{font-weight:600}#historyList{padding-left:22px}#historyList li{margin:12px 0}
+</style></head><body><main>
+<h1>Folder Cleanup</h1><p class="muted">Review every change. Keep the copies you want. Restore a cleanup when needed.</p>
+<section class="card"><h2>1. Choose a folder</h2>
+<label for="folder">Folder path</label><input id="folder" type="text" placeholder="C:\Users\you\Downloads" autocomplete="off">
+<div class="row" style="margin-top:12px"><button id="browse">Browse for folder</button><span id="shortcuts" class="row"></span></div></section>
+<section class="card"><h2>2. Choose cleanup actions</h2><div class="grid">
+<div><label><input id="sort" type="checkbox"> Sort into category folders</label>
+<label><input id="duplicates" type="checkbox"> Find duplicate files</label>
+<label><input id="empty" type="checkbox"> Remove empty folders</label></div>
+<div><label><input id="oldOn" type="checkbox"> Move old files to _Old</label>
+<label for="old">Older than (days)</label><input id="old" type="number" value="90" min="0" step="1"></div></div>
+<details style="margin-top:16px"><summary>File filters</summary><div class="grid" style="margin-top:12px">
+<label>Include patterns<input id="include" type="text" placeholder="*.pdf, report*"></label>
+<label>Exclude patterns<input id="exclude" type="text" placeholder="keep*, *.tmp"></label>
+<label>Extensions<input id="ext" type="text" placeholder="jpg, png"></label>
+<label>Minimum size<input id="min" type="text" placeholder="500KB"></label>
+<label>Maximum size<input id="max" type="text" placeholder="10MB"></label></div></details>
+<p class="muted">Hidden, system, dependency, and linked folders are protected. Duplicate copies go to recovery storage.</p>
+<button class="primary" id="prev">Preview cleanup</button></section>
+<section class="card" id="work" hidden><div class="row"><strong id="phase">Working…</strong><button id="cancel">Cancel</button></div><progress id="progress"></progress><div id="workPath" class="muted path"></div></section>
+<p id="status" role="status" aria-live="polite"></p>
+<section class="card" id="dupes" hidden><h2>Choose which duplicate copies to keep</h2><p class="muted">Select one keeper per group, then update the preview. You can also uncheck any individual removal below.</p><div id="groups"></div><div class="row"><button id="revise">Update preview with keeper choices</button><button id="resetKeepers">Reset keeper choices</button></div></section>
+<section class="card" id="results" hidden><h2>3. Review changes</h2><p id="summary"></p><p class="muted">Potential reclaimable space is the size of duplicate copies. No disk space is freed while recovery copies are retained.</p>
+<div class="row"><button id="all">Select all</button><button id="none">Select none</button></div>
+<div class="scroll"><table><thead><tr><th scope="col">Apply</th><th scope="col">Action</th><th scope="col">File or folder</th><th scope="col">Destination / keeper</th><th scope="col">Size</th></tr></thead><tbody id="actions"></tbody></table></div>
+<button class="primary" id="apply" disabled style="margin-top:16px">Apply selected changes</button></section>
+<div class="row"><button id="undo" disabled>Undo last cleanup</button></div>
+<section class="card"><div class="row"><h2>Activity history</h2><button id="refresh">Refresh history</button></div><p class="muted">Completed, cancelled, and failed tasks stay in the log after restarting. Restore a cleanup from its history entry.</p><ol id="historyList"></ol><small id="logPath" class="path"></small></section>
+</main><script>
+'use strict';
+const $=id=>document.getElementById(id), TOKEN='__TOKEN__';
+let preview=null, keepers=[], recovery=null, busy=false, jobId=null, pollTimer=null;
+const configIds=['folder','sort','duplicates','empty','oldOn','old','include','exclude','ext','min','max'];
+const list=value=>value.split(',').map(s=>s.trim()).filter(Boolean);
+const bytes=n=>{if(n<1024)return n+' B';const units=['KB','MB','GB','TB'];let u=-1;do{n/=1024;u++}while(n>=1024&&u<units.length-1);return n.toFixed(1)+' '+units[u]};
+function message(text,error=false){$('status').textContent=text;$('status').className=error?'error':''}
+async function api(path,body={}){const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(body)});const data=await response.json();if(!response.ok){const error=Error(data.error||response.statusText);error.status=response.status;throw error}return data}
+function options(){return {folder:$('folder').value.trim(),sort:$('sort').checked,duplicates:$('duplicates').checked,empty_dirs:$('empty').checked,old:$('oldOn').checked?Number($('old').value):null,include:list($('include').value),exclude:list($('exclude').value),ext:list($('ext').value),min_size:$('min').value.trim(),max_size:$('max').value.trim(),keepers}}
+function selected(){return [...document.querySelectorAll('.actionCheck:checked')].map(el=>Number(el.value))}
+function updateControls(){document.querySelectorAll('button,input').forEach(el=>el.disabled=busy);$('cancel').disabled=!busy||!jobId;$('apply').disabled=busy||!preview||!selected().length;$('undo').disabled=busy||!recovery;$('revise').disabled=busy||!keepers.length}
+function invalidate(reset=true){preview=null;if(reset){keepers=[];$('dupes').hidden=true}$('results').hidden=true;updateControls()}
+function setFolder(path){if(path){$('folder').value=path;invalidate()}}
+function selectionSummary(){if(!preview)return;const ids=new Set(selected()),actions=preview.actions.filter(a=>ids.has(a.id));const count=kind=>actions.filter(a=>a.kind===kind).length;const amount=actions.filter(a=>a.kind==='recover').reduce((n,a)=>n+a.size,0);$('summary').textContent=`${count('move')} files to move · ${count('recover')} duplicate copies to recover · ${count('rmdir')} empty folders · ${bytes(amount)} potentially reclaimable`;updateControls()}
+function renderPreview(data){preview=data;keepers=data.duplicate_groups.map(g=>g.keeper);$('results').hidden=false;const body=$('actions');body.replaceChildren();for(const action of data.actions){const row=body.insertRow();const check=document.createElement('input');check.type='checkbox';check.className='actionCheck';check.checked=true;check.value=action.id;check.setAttribute('aria-label',`Apply ${action.kind} to ${action.src}`);check.onchange=selectionSummary;row.insertCell().append(check);row.insertCell().textContent={move:'Move',recover:'Move to recovery',rmdir:'Remove empty folder'}[action.kind];row.insertCell().textContent=action.src;row.insertCell().textContent=action.detail;row.insertCell().textContent=bytes(action.size)}
+ const groups=$('groups');groups.replaceChildren();$('dupes').hidden=!data.duplicate_groups.length;
+ data.duplicate_groups.forEach((group,index)=>{const field=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=`Group ${index+1} · ${group.files.length} identical copies`;field.append(legend);group.files.forEach(file=>{const label=document.createElement('label'),radio=document.createElement('input');radio.type='radio';radio.name='keeper'+index;radio.checked=file.path===group.keeper;radio.onchange=()=>{keepers[index]=file.path;preview=null;$('results').hidden=true;message('Keeper changed. Update the preview before applying.');updateControls()};label.append(radio,document.createTextNode(` Keep ${file.path} — ${bytes(file.size)} — modified ${new Date(file.modified*1000).toLocaleString()}`));field.append(label)});groups.append(field)});selectionSummary()}
+async function refreshHistory(){try{const data=await api('history');$('logPath').textContent='Log: '+data.log_path;const list=$('historyList');list.replaceChildren();for(const entry of data.entries){const li=document.createElement('li');li.append(document.createTextNode(`${new Date(entry.started*1000).toLocaleString()} · ${entry.kind} · ${entry.status}${entry.folder?' · '+entry.folder:''}${entry.error?' · '+entry.error:''}`));if(entry.session_id&&entry.kind==='apply'){const button=document.createElement('button');button.textContent='Restore this cleanup';button.style.marginLeft='10px';button.disabled=busy;button.onclick=()=>restore({folder:entry.folder,session_id:entry.session_id});li.append(button)}list.append(li)}if(!data.entries.length)list.textContent='No tasks recorded yet.'}catch(error){message(error.message,true)}}
+function finish(job){busy=false;jobId=null;sessionStorage.removeItem('folderCleanupJob');$('work').hidden=true;const result=job.result||{};
+ if(job.kind==='preview'&&job.status==='complete')renderPreview(result);
+ if(job.kind==='apply'){preview=null;$('results').hidden=true;$('dupes').hidden=true;keepers=[];if(result.session_id)recovery={folder:result.folder,session_id:result.session_id}}
+ if(job.kind==='undo'){preview=null;$('results').hidden=true;if(job.status==='complete')recovery=null;else if(result.session_id)recovery={folder:result.folder,session_id:result.session_id}}
+ let text=job.status==='complete'?(job.kind==='preview'?'Review the plan, choose keepers, and select the changes to apply.':job.kind==='undo'?'Cleanup restored.':`${(result.actions||[]).length} actions completed. Recovery copies retained; no disk space freed.`):job.error;
+ if(job.status!=='complete'&&result.session_id)text+=' Use Undo last cleanup to restore completed changes.';
+ if(job.warning)text+=' '+job.warning;message(text,job.status==='failed');updateControls();refreshHistory()}
+async function poll(){try{const job=await api('job',{job_id:jobId});$('phase').textContent=job.phase||'Working';$('workPath').textContent=job.path||'';if(job.total){$('progress').max=job.total;$('progress').value=job.completed||0;$('phase').textContent+=` (${job.completed||0}/${job.total})`}else $('progress').removeAttribute('value');if(job.status==='running')pollTimer=setTimeout(poll,350);else finish(job)}catch(error){if(error.status===400||error.status===403){busy=false;jobId=null;sessionStorage.removeItem('folderCleanupJob');$('work').hidden=true;updateControls();message('The server session ended. Reload this page and check activity history before starting another cleanup.',true);return}message('Connection interrupted; the task may still be running. Retrying… '+error.message,true);pollTimer=setTimeout(poll,1500)}}
+async function start(kind,opts){if(busy)return;busy=true;updateControls();message('');try{const data=await api('start',{kind,options:opts});jobId=data.job_id;sessionStorage.setItem('folderCleanupJob',jobId);$('work').hidden=false;updateControls();poll()}catch(error){busy=false;updateControls();message(error.message,true)}}
+function scan(){if(!$('folder').value.trim())return message('Choose a folder first.',true);if($('oldOn').checked&&($('old').value===''||!Number.isInteger(Number($('old').value))||Number($('old').value)<0))return message('Enter a nonnegative whole number of days.',true);preview=null;start('preview',options())}
+function restore(data){if(confirm('Restore this cleanup? Existing or changed files will never be overwritten.'))start('undo',data)}
+$('prev').onclick=scan;$('revise').onclick=scan;$('resetKeepers').onclick=()=>{keepers=[];scan()};
+$('apply').onclick=()=>{if(preview&&confirm(`Apply ${selected().length} selected changes? Duplicate copies will be saved for recovery.`))start('apply',{plan_id:preview.plan_id,selected:selected()})};
+$('undo').onclick=()=>restore(recovery);$('cancel').onclick=async()=>{try{await api('cancel',{job_id:jobId});$('cancel').disabled=true;message('Cancellation requested. The current file operation may finish first.')}catch(error){message(error.message,true)}};
+$('all').onclick=()=>{document.querySelectorAll('.actionCheck').forEach(el=>el.checked=true);selectionSummary()};$('none').onclick=()=>{document.querySelectorAll('.actionCheck').forEach(el=>el.checked=false);selectionSummary()};
+$('browse').onclick=async()=>{busy=true;updateControls();message('Choose a folder in the folder picker.');try{const data=await api('browse');setFolder(data.folder);message(data.folder?'Folder selected.':'Folder selection cancelled.')}catch(error){message(error.message,true)}finally{busy=false;updateControls()}};
+for(const id of configIds)$(id).addEventListener('input',()=>invalidate());$('refresh').onclick=refreshHistory;
+api('shortcuts').then(data=>{for(const [name,path] of Object.entries(data)){const button=document.createElement('button');button.textContent=name;button.onclick=()=>setFolder(path);button.disabled=busy;$('shortcuts').append(button)}}).catch(error=>message(error.message,true));
+refreshHistory();jobId=sessionStorage.getItem('folderCleanupJob');if(jobId){busy=true;$('work').hidden=false;poll()}updateControls();
+</script></body></html>

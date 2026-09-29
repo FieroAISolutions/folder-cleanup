@@ -4,11 +4,28 @@ import json
 import os
 import stat
 import uuid
+import threading
+import time
 from pathlib import Path
 
 RECOVERY = '.foldercleanup-recovery'
 PROTECTED = {'.git', '.hg', '.svn', 'node_modules', '__pycache__', '.venv',
              'venv', '$recycle.bin', 'system volume information', RECOVERY}
+CONTROL = threading.local()
+
+
+class Cancelled(ValueError):
+    pass
+
+
+def checkpoint(phase=None, completed=None, total=None, path=None):
+    control = getattr(CONTROL, 'value', None)
+    if control:
+        cancel, progress = control[:2]
+        if cancel.is_set():
+            raise Cancelled('Cancelled. Completed actions remain recoverable.')
+        if phase:
+            progress(phase, completed, total, str(path) if path else '')
 
 
 def blocked(path):
@@ -41,6 +58,7 @@ def validate_root(value):
 def walk(root):
     """Prune protected directories before descending; never follow links."""
     for path in sorted(root.iterdir()):
+        checkpoint()
         if blocked(path):
             continue
         yield path
@@ -49,12 +67,14 @@ def walk(root):
 
 
 def fingerprint(path):
+    checkpoint()
     info = path.stat()
     if path.is_dir():
         return ['dir', info.st_dev, info.st_ino]
     digest = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            checkpoint()
             digest.update(chunk)
     after = path.stat()
     if (info.st_size, info.st_mtime_ns, info.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
@@ -63,7 +83,11 @@ def fingerprint(path):
 
 
 def snapshot(root):
-    return {str(p.relative_to(root)): fingerprint(p) for p in [root, *walk(root)]}
+    result = {}
+    for i, p in enumerate([root, *walk(root)]):
+        checkpoint('Checking files', i, None, p)
+        result[str(p.relative_to(root))] = fingerprint(p)
+    return result
 
 
 def check_path(root, path, recovery=False):
@@ -105,13 +129,19 @@ def execute(plan, root, expected=None, report=None):
     check_path(root, session, recovery=True)
     session.mkdir(parents=True)
     journal = session / 'journal.json'
-    data = {'root': str(root), 'actions': [], 'created_dirs': [], 'state': 'running'}
+    data = {'root': str(root), 'actions': [], 'created_dirs': [], 'state': 'running',
+            'started': time.time()}
     save(journal, data)
     if report is not None:
         report['session_id'] = session.name
+        report['completed_actions'] = []
+        control = getattr(CONTROL, 'value', None)
+        if control and len(control) > 2:
+            control[2](report)
     done = []
     try:
         for kind, src, dest in plan:
+            checkpoint('Applying changes', len(done), len(plan), src)
             check_path(root, src)
             if fingerprint(src) != current[str(src.relative_to(root))]:
                 raise ValueError(f'File changed during cleanup: {src}')
@@ -145,12 +175,18 @@ def execute(plan, root, expected=None, report=None):
             entry['state'] = 'done'
             save(journal, data)
             done.append((kind, src, dest))
+            if report is not None:
+                report['completed_actions'].append({'kind': kind, 'src': str(src.relative_to(root))})
         data['state'] = 'complete'
+    except Cancelled:
+        data['state'] = 'cancelled'
+        raise
     except Exception as exc:
         data['state'] = 'interrupted'
         data['error'] = str(exc)
         raise ValueError(f'{exc} Completed {len(done)} actions. Recovery journal: {journal}') from exc
     finally:
+        data['finished'] = time.time()
         save(journal, data)
     return done
 
@@ -168,6 +204,8 @@ def undo(root, session_id):
     for entry in reversed(data['actions']):
         if entry['state'] == 'undone':
             continue
+        checkpoint('Restoring files', sum(e['state'] == 'undone' for e in data['actions']),
+                   len(data['actions']), entry['src'])
         src = root / entry['src']
         check_path(root, src)
         if entry['kind'] == 'rmdir':

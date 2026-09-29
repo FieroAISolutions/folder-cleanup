@@ -48,6 +48,7 @@ def file_hash(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
+            safety.checkpoint()
             h.update(chunk)
     return h.hexdigest()
 
@@ -92,9 +93,11 @@ def plan_sort(root: Path, ok=lambda p: True):
     return [(p, root / category_for(p) / p.name) for p in top_level_files(root, ok)]
 
 
-def plan_duplicates(root: Path, ok=lambda p: True):
+def plan_duplicates(root: Path, ok=lambda p: True, keepers=()):
     """Return duplicate files (later copies of identical content), scanning recursively."""
     by_size, dupes = {}, []
+    requested = set(keepers)
+    matched = set()
     for p in safety.walk(root):
         if p.is_file() and not p.is_symlink() and ok(p):
             by_size.setdefault(p.stat().st_size, []).append(p)
@@ -103,11 +106,21 @@ def plan_duplicates(root: Path, ok=lambda p: True):
             continue
         seen = {}
         for p in group:
+            safety.checkpoint('Comparing duplicates', None, None, p)
             h = file_hash(p)
-            if h in seen:
-                dupes.append((p, seen[h]))
-            else:
-                seen[h] = p
+            seen.setdefault(h, []).append(p)
+        for identical in seen.values():
+            if len(identical) < 2:
+                continue
+            chosen = [p for p in identical if str(p.relative_to(root)) in requested]
+            if len(chosen) > 1:
+                raise ValueError('Choose exactly one keeper per duplicate group.')
+            keeper = chosen[0] if chosen else identical[0]
+            if chosen:
+                matched.add(str(keeper.relative_to(root)))
+            dupes.extend((p, keeper) for p in identical if p != keeper)
+    if requested != matched:
+        raise ValueError('A selected duplicate keeper is no longer in a matching group. Clear keeper choices and preview again.')
     return dupes
 
 
@@ -122,7 +135,7 @@ def empty_dirs(root: Path):
             if d.is_dir() and not d.is_symlink() and not any(d.iterdir())]
 
 
-def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, old=None, ok=lambda p: True):
+def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, old=None, ok=lambda p: True, keepers=()):
     """Compute actions as (kind, src, dest) tuples; kind is 'move', 'delete' or 'rmdir'.
 
     For 'delete', dest is the file it duplicates. Nothing is changed on disk.
@@ -140,7 +153,7 @@ def build_plan(root: Path, *, sort=False, duplicates=False, empty_dirs_=False, o
         return dest
 
     if duplicates:
-        for dup, orig in plan_duplicates(root, ok):
+        for dup, orig in plan_duplicates(root, ok, keepers):
             plan.append(("delete", dup, orig))
             used.add(dup)
     if old is not None:
