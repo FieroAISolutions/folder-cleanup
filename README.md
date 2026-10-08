@@ -2,15 +2,38 @@
 
 A small, dependency-free Python CLI that tidies a folder. **Dry run by default**; nothing changes without `--apply`.
 
+## Get started
+
+Use Python **3.11 or 3.12**, the versions tested in CI on Windows and Linux.
+The app uses Python's standard library; no `pip install` step is needed to run it.
+On Windows, make sure `python --version` works in a terminal. On Linux or macOS,
+use `python3 --version` and `python3` for the commands below.
+
+Get a copy with Git:
+
+```sh
+git clone https://github.com/enfierno21/folder-cleanup.git
+cd folder-cleanup
+```
+
+Without Git, use **Code → Download ZIP** on this repository's GitHub page, extract
+the archive, and open a terminal in the extracted folder containing `webui.py`.
+Run the commands below from that folder. Keep the application folder separate
+from the folder you want to clean, and try a disposable copy of a few files first.
+
 ## Web UI
+
+On Linux or macOS:
 
 ```
 python3 webui.py          # opens http://127.0.0.1:8765/
 ```
 
+On Windows, run `python webui.py`, or double-click **Start FolderCleanup.cmd**.
+
 Pick a folder, tick actions, set filters, **Preview** the plan, then **Apply**. It listens on localhost only, and every POST needs a per-run token. Apply uses the saved preview, verifies the folder still matches, and rejects changes instead of silently changing the plan. Previews expire after 30 minutes, are single use, and disappear when the server restarts. Only the most recent 32 previews are retained.
 
-On Windows: `python webui.py`. After a successful cleanup, **Undo last cleanup** restores moved files and recovered duplicates. Recovery data stays in `.foldercleanup-recovery` inside the selected folder; duplicates are moved there, not permanently deleted. This does **not** free disk space. Keep that folder until you no longer need recovery.
+After a successful cleanup, **Undo last cleanup** restores moved files and recovered duplicates. Recovery data stays in `.foldercleanup-recovery` inside the selected folder; duplicates are moved there, not permanently deleted. This does **not** free disk space. Keep that folder until you no longer need recovery.
 
 ### Review and control a cleanup
 
@@ -37,6 +60,9 @@ Hidden/system files, dot folders, version-control folders, dependency folders, s
 Preview validation hashes eligible files, which can take time on large folders. Avoid editing the folder while cleanup or undo runs: validation detects changes before execution and checks each source again, but cannot lock out other programs for the entire operation.
 
 ## Command line
+
+On Windows, replace `python3` with `python` and use your chosen folder's Windows
+path (for example, `"C:\Users\you\Downloads"`). Always review the preview first.
 
 ```
 python3 foldercleanup.py ~/Downloads --sort --duplicates --empty-dirs        # preview
@@ -71,7 +97,7 @@ Tests: install pytest with `python -m pip install pytest`, then run
 test fixtures outside AppData, which the cleanup safety policy blocks.
 Pytest clears `pytest-tmp` before running; reserve that directory for tests.
 
-Optional browser integration test: install `playwright` and Microsoft Edge, then run `pytest tests/test_browser.py`. This test uses temporary files and a mocked folder picker; it never cleans your personal folders.
+Optional browser integration test: install `playwright` with `python -m pip install playwright` and install Microsoft Edge, then run `python -m pytest tests/test_browser.py --basetemp=pytest-tmp`. This test uses temporary files and a mocked folder picker; it never cleans your personal folders.
 
 ## Community and security
 
