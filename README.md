@@ -66,7 +66,10 @@ Example: `python3 foldercleanup.py ~/Downloads --sort --ext pdf --ext docx --min
 
 Name collisions are resolved by renaming (`file (1).txt`), never overwriting. Hidden files are left alone.
 
-Tests: `pip install pytest && pytest`
+Tests: install pytest with `python -m pip install pytest`, then run
+`python -m pytest -q --basetemp=pytest-tmp`. This matches CI and keeps Windows
+test fixtures outside AppData, which the cleanup safety policy blocks.
+Pytest clears `pytest-tmp` before running; reserve that directory for tests.
 
 Optional browser integration test: install `playwright` and Microsoft Edge, then run `pytest tests/test_browser.py`. This test uses temporary files and a mocked folder picker; it never cleans your personal folders.
 
