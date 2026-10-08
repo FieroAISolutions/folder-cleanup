@@ -30,4 +30,4 @@ jobs:
         # Windows runner temp directories live under AppData, which this safety-
         # focused application correctly refuses to clean. Keep fixtures in the
         # checked-out workspace so the same safety policy remains enabled in CI.
-        run: python -m pytest -q --basetemp=.pytest-tmp
+        run: python -m pytest -q --basetemp=pytest-tmp
