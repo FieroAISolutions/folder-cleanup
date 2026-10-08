@@ -27,4 +27,7 @@ jobs:
       - name: Install test dependency
         run: python -m pip install pytest
       - name: Run tests
-        run: python -m pytest -q
+        # Windows runner temp directories live under AppData, which this safety-
+        # focused application correctly refuses to clean. Keep fixtures in the
+        # checked-out workspace so the same safety policy remains enabled in CI.
+        run: python -m pytest -q --basetemp=.pytest-tmp
