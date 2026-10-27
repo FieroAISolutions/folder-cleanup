@@ -12,7 +12,7 @@ use `python3 --version` and `python3` for the commands below.
 Get a copy with Git:
 
 ```sh
-git clone https://github.com/enfierno21/folder-cleanup.git
+git clone https://github.com/FieroAISolutions/folder-cleanup.git
 cd folder-cleanup
 ```
 
